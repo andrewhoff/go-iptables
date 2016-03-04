@@ -30,41 +30,39 @@ import (
 // Adds the output of stderr to exec.ExitError
 type ExitError struct {
 	exec.ExitError
-	msg string
+	stderrMsg string
 }
 
 type PathError struct {
 	os.PathError
-	msg string
+	stderrMsg string
 }
 
-type Error struct {
-	error
-	msg string
+type GPError struct {
+	err       error
+	stderrMsg string
 }
 
 func (e *ExitError) ExitStatus() int {
-	return e.Sys().(syscall.WaitStatus).ExitStatus()
+	sys := e.Sys()
+	val, ok := sys.(syscall.WaitStatus)
+	if ok {
+		return val.ExitStatus()
+	}
+
+	return -2
 }
 
 func (e *ExitError) Error() string {
-	return fmt.Sprintf("exit status %v: %v", e.ExitStatus(), e.msg)
+	return fmt.Sprintf("exit status %v: %v", e.ExitStatus(), e.stderrMsg)
 }
 
-func (p *PathError) ExitStatus() int {
-	return p.ExitStatus()
+func (e *PathError) Error() string {
+	return fmt.Sprintf("Offending operation: %v\nOffending Path: %v\nError: %v\n%v", e.Op, e.Path, e.Err, e.stderrMsg)
 }
 
-func (p *PathError) Error() string {
-	return fmt.Sprintf("exit status %v: %v", p.ExitStatus(), p.msg)
-}
-
-func (e *Error) ExitStatus() int {
-	return e.ExitStatus()
-}
-
-func (e *Error) Error() string {
-	return fmt.Sprintf("exit status %v: %v", e.ExitStatus(), e.msg)
+func (e *GPError) Error() string {
+	return fmt.Sprintf("Unknown error: %v\n%v", e.err, e.stderrMsg)
 }
 
 type IPTables struct {
@@ -104,18 +102,31 @@ func New() (*IPTables, error) {
 func (ipt *IPTables) Exists(table, chain string, rulespec ...string) (bool, error) {
 	if !ipt.hasCheck {
 		return ipt.existsForOldIptables(table, chain, rulespec)
-
 	}
+
 	cmd := append([]string{"-t", table, "-C", chain}, rulespec...)
 	err := ipt.run(cmd...)
-	switch {
-	case err == nil:
-		return true, nil
-	case err.(*ExitError).ExitStatus() == 1:
-		return false, nil
-	default:
-		return false, err
+	if err != nil {
+
+		switch val := err.(type) {
+
+		case *ExitError:
+
+			if val.ExitStatus() == 1 {
+				return false, nil
+			}
+
+		case *PathError:
+			return false, nil
+
+		default:
+			return false, val
+
+		}
+
 	}
+
+	return true, nil
 }
 
 // Insert inserts rulespec to specified table/chain (in specified pos)
@@ -175,15 +186,27 @@ func (ipt *IPTables) NewChain(table, chain string) error {
 func (ipt *IPTables) ClearChain(table, chain string) error {
 	err := ipt.NewChain(table, chain)
 
-	switch {
-	case err == nil:
-		return nil
-	case err.(*ExitError).ExitStatus() == 1:
-		// chain already exists. Flush (clear) it.
-		return ipt.run("-t", table, "-F", chain)
-	default:
-		return err
+	if err != nil {
+		switch val := err.(type) {
+
+		case *ExitError:
+			if val.ExitStatus() == 1 {
+				// chain already exists. Flush (clear) it.
+				return ipt.run("-t", table, "-F", chain)
+			}
+
+			return err
+
+		case *PathError:
+			return err
+
+		default:
+			return err
+
+		}
 	}
+
+	return nil
 }
 
 // RenameChain renames the old chain to the new one.
@@ -225,17 +248,20 @@ func (ipt *IPTables) runWithOutput(args []string, stdout io.Writer) error {
 		Stderr: &stderr,
 	}
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if err != nil {
 		switch val := err.(type) {
 
 		case *exec.ExitError:
-			return &ExitError{*(val), stderr.String()}
-		case *os.PathError:
-			return &PathError{*(val), stderr.String()}
-		default:
-			return &Error{fmt.Errorf("cannot determine error type"), stderr.String()}
-		}
+			return &ExitError{*val, stderr.String()}
 
+		case *os.PathError:
+			return &PathError{*val, stderr.String()}
+
+		default:
+			return &GPError{val, stderr.String()}
+
+		}
 	}
 
 	return nil
