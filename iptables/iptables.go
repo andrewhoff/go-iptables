@@ -58,7 +58,7 @@ func (e *ExitError) Error() string {
 }
 
 func (e *PathError) Error() string {
-	return fmt.Sprintf("Offending operation: %v\nOffending Path: %v\nError: %v\n%v", e.Op, e.Path, e.Err, e.stderrMsg)
+	return fmt.Sprintf("Offending operation: %v, Offending Path: %v, Error: %v\n%v", e.Op, e.Path, e.Err, e.stderrMsg)
 }
 
 func (e *GPError) Error() string {
