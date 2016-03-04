@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -27,13 +28,39 @@ import (
 )
 
 // Adds the output of stderr to exec.ExitError
-type Error struct {
+type ExitError struct {
 	exec.ExitError
 	msg string
 }
 
-func (e *Error) ExitStatus() int {
+type PathError struct {
+	os.PathError
+	msg string
+}
+
+type Error struct {
+	error
+	msg string
+}
+
+func (e *ExitError) ExitStatus() int {
 	return e.Sys().(syscall.WaitStatus).ExitStatus()
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("exit status %v: %v", e.ExitStatus(), e.msg)
+}
+
+func (p *PathError) ExitStatus() int {
+	return p.ExitStatus()
+}
+
+func (p *PathError) Error() string {
+	return fmt.Sprintf("exit status %v: %v", p.ExitStatus(), p.msg)
+}
+
+func (e *Error) ExitStatus() int {
+	return e.ExitStatus()
 }
 
 func (e *Error) Error() string {
@@ -84,7 +111,7 @@ func (ipt *IPTables) Exists(table, chain string, rulespec ...string) (bool, erro
 	switch {
 	case err == nil:
 		return true, nil
-	case err.(*Error).ExitStatus() == 1:
+	case err.(*ExitError).ExitStatus() == 1:
 		return false, nil
 	default:
 		return false, err
@@ -151,7 +178,7 @@ func (ipt *IPTables) ClearChain(table, chain string) error {
 	switch {
 	case err == nil:
 		return nil
-	case err.(*Error).ExitStatus() == 1:
+	case err.(*ExitError).ExitStatus() == 1:
 		// chain already exists. Flush (clear) it.
 		return ipt.run("-t", table, "-F", chain)
 	default:
@@ -199,7 +226,16 @@ func (ipt *IPTables) runWithOutput(args []string, stdout io.Writer) error {
 	}
 
 	if err := cmd.Run(); err != nil {
-		return &Error{*(err.(*exec.ExitError)), stderr.String()}
+		switch val := err.(type) {
+
+		case *exec.ExitError:
+			return &ExitError{*(val), stderr.String()}
+		case *os.PathError:
+			return &PathError{*(val), stderr.String()}
+		default:
+			return &Error{fmt.Errorf("cannot determine error type"), stderr.String()}
+		}
+
 	}
 
 	return nil
